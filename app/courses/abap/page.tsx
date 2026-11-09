@@ -2,10 +2,13 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-const STORAGE_KEY = "saphub:abap:completed-lessons";
-const PROGRESS_EVENT = "saphub:progress-updated";
+import { createClient } from "@/lib/supabase/client";
+import {
+  loadCompletedLessons,
+  PROGRESS_EVENT,
+} from "@/lib/progress";
 
 const lessons = [
   "what-is-sap",
@@ -73,61 +76,114 @@ const chapters = [
   },
 ];
 
+const TOTAL_LESSONS = lessons.length;
+
 export default function ABAPCoursePage() {
   const [completedLessons, setCompletedLessons] = useState<string[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
-  useEffect(() => {
-    function loadProgress() {
-      try {
-        const saved = localStorage.getItem(STORAGE_KEY);
-        const parsed = saved ? JSON.parse(saved) : [];
+  // Load progress from the shared progress system.
+  const refreshProgress = useCallback(async () => {
+    try {
+      const savedLessons = await loadCompletedLessons();
 
-        if (Array.isArray(parsed)) {
-          setCompletedLessons(
-            parsed.filter(
-              (slug): slug is string =>
-                typeof slug === "string" && lessons.includes(slug)
-            )
-          );
-        }
-      } catch {
-        setCompletedLessons([]);
-      }
+      const validLessons = [
+        ...new Set(
+          savedLessons.filter((slug) => lessons.includes(slug))
+        ),
+      ];
 
+      setCompletedLessons(validLessons);
+    } catch (error) {
+      console.error("Unable to load course progress:", error);
+    } finally {
       setLoaded(true);
     }
+  }, []);
 
-    loadProgress();
+  useEffect(() => {
+    let active = true;
 
-    window.addEventListener("storage", loadProgress);
-    window.addEventListener(PROGRESS_EVENT, loadProgress);
+    async function loadProgress() {
+      try {
+        const savedLessons = await loadCompletedLessons();
+
+        if (!active) return;
+
+        const validLessons = [
+          ...new Set(
+            savedLessons.filter((slug) => lessons.includes(slug))
+          ),
+        ];
+
+        setCompletedLessons(validLessons);
+      } catch (error) {
+        console.error("Unable to load course progress:", error);
+
+        if (active) {
+          setCompletedLessons([]);
+        }
+      } finally {
+        if (active) {
+          setLoaded(true);
+        }
+      }
+    }
+
+    function handleProgressUpdate() {
+      void loadProgress();
+    }
+
+    void loadProgress();
+
+    window.addEventListener(PROGRESS_EVENT, handleProgressUpdate);
+    window.addEventListener("storage", handleProgressUpdate);
+
+    // Refresh progress when the authentication state changes.
+    const supabase = createClient();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(() => {
+      window.setTimeout(() => {
+        if (active) {
+          void loadProgress();
+        }
+      }, 0);
+    });
 
     return () => {
-      window.removeEventListener("storage", loadProgress);
-      window.removeEventListener(PROGRESS_EVENT, loadProgress);
+      active = false;
+
+      window.removeEventListener(PROGRESS_EVENT, handleProgressUpdate);
+      window.removeEventListener("storage", handleProgressUpdate);
+
+      subscription.unsubscribe();
     };
   }, []);
 
-  const totalLessons = lessons.length;
+  const totalLessons = TOTAL_LESSONS;
+
+  const completedCount = completedLessons.length;
 
   const progress = useMemo(
     () =>
-      Math.round((completedLessons.length / totalLessons) * 100),
-    [completedLessons.length, totalLessons]
+      Math.round((completedCount / totalLessons) * 100),
+    [completedCount, totalLessons]
   );
 
-  const remainingLessons = totalLessons - completedLessons.length;
+  const remainingLessons = totalLessons - completedCount;
 
   const nextLesson = lessons.find(
     (lesson) => !completedLessons.includes(lesson)
   );
 
-  const courseCompleted = completedLessons.length === totalLessons;
+  const courseCompleted = completedCount === totalLessons;
 
-  // Reset all course progress
-  function handleResetProgress() {
-    if (!loaded || completedLessons.length === 0) return;
+  // Reset progress for the current learner only.
+  async function handleResetProgress() {
+    if (!loaded || completedCount === 0 || resetting) return;
 
     const confirmed = window.confirm(
       "Are you sure you want to reset your SAP ABAP progress? All 24 lessons will be marked as incomplete."
@@ -135,10 +191,55 @@ export default function ABAPCoursePage() {
 
     if (!confirmed) return;
 
-    localStorage.removeItem(STORAGE_KEY);
-    setCompletedLessons([]);
+    try {
+      setResetting(true);
 
-    window.dispatchEvent(new Event(PROGRESS_EVENT));
+      const supabase = createClient();
+
+      const {
+        data: { user },
+        error: authError,
+      } = await supabase.auth.getUser();
+
+      if (authError && authError.name !== "AuthSessionMissingError") {
+        throw authError;
+      }
+
+      if (user) {
+        // Delete only the current user's SAP ABAP progress.
+        const { error } = await supabase
+          .from("lesson_progress")
+          .delete()
+          .eq("user_id", user.id)
+          .eq("course_name", "SAP ABAP");
+
+        if (error) {
+          throw error;
+        }
+
+        // Clear this user's local cache.
+        localStorage.removeItem(
+          `saphub:user:${user.id}:abap:completed-lessons`
+        );
+      } else {
+        // Clear guest progress only.
+        localStorage.removeItem(
+          "saphub:guest:abap:completed-lessons"
+        );
+      }
+
+      setCompletedLessons([]);
+
+      window.dispatchEvent(new Event(PROGRESS_EVENT));
+    } catch (error) {
+      console.error("Unable to reset course progress:", error);
+
+      alert(
+        "Unable to reset progress. Please check your connection and try again."
+      );
+    } finally {
+      setResetting(false);
+    }
   }
 
   return (
@@ -323,7 +424,7 @@ export default function ABAPCoursePage() {
 
                 <p className="mt-5 text-sm font-semibold text-teal-300">
                   {loaded
-                    ? `${completedLessons.length} of ${totalLessons} lessons completed`
+                    ? `${completedCount} of ${totalLessons} lessons completed`
                     : "Loading your progress..."}
                 </p>
               </div>
@@ -362,7 +463,7 @@ export default function ABAPCoursePage() {
             <div className="rounded-2xl border border-white/10 bg-[#111d30] p-5 transition duration-300 hover:-translate-y-1 hover:border-teal-400/30">
               <div className="text-2xl">✓</div>
               <p className="mt-5 text-3xl font-black text-teal-300">
-                {completedLessons.length}
+                {loaded ? completedCount : "—"}
               </p>
               <p className="mt-2 text-xs text-slate-400">
                 Completed lessons
@@ -372,7 +473,7 @@ export default function ABAPCoursePage() {
             <div className="rounded-2xl border border-white/10 bg-[#111d30] p-5 transition duration-300 hover:-translate-y-1 hover:border-blue-400/30">
               <div className="text-2xl">📘</div>
               <p className="mt-5 text-3xl font-black text-blue-300">
-                {remainingLessons}
+                {loaded ? remainingLessons : "—"}
               </p>
               <p className="mt-2 text-xs text-slate-400">
                 Remaining lessons
@@ -407,10 +508,14 @@ export default function ABAPCoursePage() {
           <button
             type="button"
             onClick={handleResetProgress}
-            disabled={!loaded || completedLessons.length === 0}
+            disabled={
+              !loaded ||
+              completedCount === 0 ||
+              resetting
+            }
             className="rounded-xl border border-red-400/30 px-5 py-3 text-sm font-semibold text-red-300 transition hover:border-red-400/60 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            Reset Progress
+            {resetting ? "Resetting..." : "Reset Progress"}
           </button>
         </div>
 

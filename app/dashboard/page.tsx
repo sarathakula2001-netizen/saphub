@@ -1,13 +1,12 @@
 ﻿
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 import { createClient } from "@/lib/supabase/client";
-import { getAbapProgress } from "@/lib/progress";
-import { syncLearningData } from "@/lib/learning-sync";
+import { loadAbapProgress, PROGRESS_EVENT } from "@/lib/progress";
 
 import DashboardSidebar from "@/components/dashboard/DashboardSidebar";
 import DashboardTopbar from "@/components/dashboard/DashboardTopbar";
@@ -17,11 +16,21 @@ export default function DashboardPage() {
 
   const [name, setName] = useState("Learner");
   const [loading, setLoading] = useState(true);
+
   const [progress, setProgress] = useState({
     completedCount: 0,
     totalLessons: 24,
     percentage: 0,
   });
+
+  const refreshProgress = useCallback(async () => {
+    try {
+      const latestProgress = await loadAbapProgress();
+      setProgress(latestProgress);
+    } catch (error) {
+      console.error("Unable to load dashboard progress:", error);
+    }
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -49,38 +58,52 @@ export default function DashboardPage() {
 
       setName(fullName);
 
-      // Synchronize guest bookmarks and learning progress
       try {
-        await syncLearningData();
-      } catch (syncError) {
-        console.error("Learning data sync failed:", syncError);
+        const latestProgress = await loadAbapProgress();
+
+        if (!active) return;
+
+        setProgress(latestProgress);
+      } catch (progressError) {
+        console.error(
+          "Unable to load dashboard progress:",
+          progressError
+        );
       }
 
-      if (!active) return;
-
-      // Load progress after synchronization
-      setProgress(getAbapProgress());
-      setLoading(false);
+      if (active) {
+        setLoading(false);
+      }
     }
 
-    loadUser();
+    void loadUser();
 
-    const updateProgress = () => {
-      setProgress(getAbapProgress());
-    };
+    function updateProgress() {
+      void refreshProgress();
+    }
 
-    window.addEventListener("saphub:progress-updated", updateProgress);
+    window.addEventListener(PROGRESS_EVENT, updateProgress);
     window.addEventListener("storage", updateProgress);
+
+    const supabase = createClient();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(() => {
+      window.setTimeout(() => {
+        void refreshProgress();
+      }, 0);
+    });
 
     return () => {
       active = false;
-      window.removeEventListener(
-        "saphub:progress-updated",
-        updateProgress
-      );
+
+      window.removeEventListener(PROGRESS_EVENT, updateProgress);
       window.removeEventListener("storage", updateProgress);
+
+      subscription.unsubscribe();
     };
-  }, [router]);
+  }, [router, refreshProgress]);
 
   if (loading) {
     return (
@@ -122,12 +145,14 @@ export default function DashboardPage() {
                 </span>
                 <span className="text-xl text-blue-400">▤</span>
               </div>
+
               <p className="mt-5 text-3xl font-bold">
                 {progress.completedCount}
                 <span className="ml-1 text-sm font-normal text-slate-500">
                   / {progress.totalLessons}
                 </span>
               </p>
+
               <p className="mt-2 text-xs text-slate-500">
                 ABAP lessons completed
               </p>
@@ -138,9 +163,11 @@ export default function DashboardPage() {
                 <span className="text-sm text-slate-400">ABAP progress</span>
                 <span className="text-xl text-emerald-400">◉</span>
               </div>
+
               <p className="mt-5 text-3xl font-bold">
                 {progress.percentage}%
               </p>
+
               <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/10">
                 <div
                   className="h-full rounded-full bg-gradient-to-r from-blue-500 to-emerald-400 transition-all"
@@ -154,7 +181,9 @@ export default function DashboardPage() {
                 <span className="text-sm text-slate-400">Quiz attempts</span>
                 <span className="text-xl text-violet-400">✓</span>
               </div>
+
               <p className="mt-5 text-3xl font-bold">—</p>
+
               <p className="mt-2 text-xs text-slate-500">
                 Quiz tracking coming soon
               </p>
@@ -165,7 +194,9 @@ export default function DashboardPage() {
                 <span className="text-sm text-slate-400">Learning paths</span>
                 <span className="text-xl text-amber-400">⌘</span>
               </div>
+
               <p className="mt-5 text-3xl font-bold">2</p>
+
               <p className="mt-2 text-xs text-slate-500">
                 ABAP and HANA tracks planned
               </p>
@@ -196,12 +227,14 @@ export default function DashboardPage() {
                   <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-blue-500/15 text-lg font-black text-blue-300">
                     AB
                   </div>
+
                   <span className="rounded-full border border-blue-400/20 bg-blue-400/10 px-3 py-1 text-[10px] font-semibold tracking-wide text-blue-300">
                     AVAILABLE
                   </span>
                 </div>
 
                 <h3 className="mt-6 text-xl font-bold">SAP ABAP</h3>
+
                 <p className="mt-2 max-w-md text-sm leading-6 text-slate-400">
                   Learn ABAP programming, variables, operators, conditions,
                   loops and internal tables.
@@ -211,6 +244,7 @@ export default function DashboardPage() {
                   <span className="text-slate-400">
                     {progress.completedCount} of {progress.totalLessons} lessons
                   </span>
+
                   <span className="font-semibold text-blue-300">
                     {progress.percentage}%
                   </span>
@@ -236,12 +270,14 @@ export default function DashboardPage() {
                   <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-violet-500/15 text-lg font-black text-violet-300">
                     H
                   </div>
+
                   <span className="rounded-full border border-violet-400/20 bg-violet-400/10 px-3 py-1 text-[10px] font-semibold tracking-wide text-violet-300">
                     COMING SOON
                   </span>
                 </div>
 
                 <h3 className="mt-6 text-xl font-bold">SAP HANA</h3>
+
                 <p className="mt-2 max-w-md text-sm leading-6 text-slate-400">
                   Explore in-memory databases, data modeling, SQLScript
                   and SAP HANA architecture.
@@ -265,6 +301,7 @@ export default function DashboardPage() {
           {/* Quick access */}
           <section>
             <h2 className="text-xl font-bold">Quick access</h2>
+
             <p className="mt-1 text-sm text-slate-500">
               Your personal learning tools.
             </p>
@@ -296,11 +333,16 @@ export default function DashboardPage() {
                   key={item.title}
                   className="rounded-2xl border border-white/10 bg-white/[0.025] p-5"
                 >
-                  <span className="text-2xl text-blue-400">{item.icon}</span>
+                  <span className="text-2xl text-blue-400">
+                    {item.icon}
+                  </span>
+
                   <h3 className="mt-4 font-semibold">{item.title}</h3>
+
                   <p className="mt-2 text-xs leading-5 text-slate-500">
                     {item.description}
                   </p>
+
                   <span className="mt-4 inline-block text-[10px] font-semibold tracking-wider text-slate-600">
                     COMING SOON
                   </span>

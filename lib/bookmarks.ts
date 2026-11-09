@@ -8,51 +8,72 @@ export type Bookmark = {
   created_at: string;
 };
 
-const STORAGE_KEY = "saphub:bookmarks";
+const GUEST_STORAGE_KEY = "saphub:guest:bookmarks";
 
 function getLocalBookmarks(): Bookmark[] {
   if (typeof window === "undefined") return [];
 
   try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    return saved ? JSON.parse(saved) : [];
+    const saved = localStorage.getItem(GUEST_STORAGE_KEY);
+
+    if (!saved) return [];
+
+    const parsed: unknown = JSON.parse(saved);
+
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed as Bookmark[];
   } catch {
     return [];
   }
 }
 
 function saveLocalBookmarks(bookmarks: Bookmark[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(bookmarks));
+  if (typeof window === "undefined") return;
+
+  localStorage.setItem(
+    GUEST_STORAGE_KEY,
+    JSON.stringify(bookmarks)
+  );
 }
 
+// Check guest bookmarks only.
+// Authenticated bookmark state should be loaded using getBookmarks().
 export function isLessonBookmarked(slug: string): boolean {
   return getLocalBookmarks().some(
     (bookmark) => bookmark.lesson_slug === slug
   );
 }
 
+// Load bookmarks belonging to the current account or guest.
 export async function getBookmarks(): Promise<Bookmark[]> {
   const supabase = createClient();
 
   const {
     data: { user },
-    error,
+    error: authError,
   } = await supabase.auth.getUser();
 
-  if (!error && user) {
-    const { data, error: bookmarkError } = await supabase
-      .from("bookmarks")
-      .select("lesson_slug, lesson_title, course_name, created_at")
-      .order("created_at", { ascending: false });
+  if (authError) throw authError;
 
-    if (bookmarkError) throw bookmarkError;
-
-    return data ?? [];
+  // Guests only see guest bookmarks.
+  if (!user) {
+    return getLocalBookmarks();
   }
 
-  return getLocalBookmarks();
+  // Authenticated users only see their own database records.
+  const { data, error } = await supabase
+    .from("bookmarks")
+    .select("lesson_slug, lesson_title, course_name, created_at")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false });
+
+  if (error) throw error;
+
+  return data ?? [];
 }
 
+// Save a bookmark for the current account or guest.
 export async function addBookmark(
   lesson: Omit<Bookmark, "created_at">
 ): Promise<void> {
@@ -60,27 +81,36 @@ export async function addBookmark(
 
   const {
     data: { user },
-    error,
+    error: authError,
   } = await supabase.auth.getUser();
 
-  if (!error && user) {
-    const { error: insertError } = await supabase
+  if (authError) throw authError;
+
+  if (user) {
+    const { error } = await supabase
       .from("bookmarks")
       .upsert(
         {
           user_id: user.id,
           ...lesson,
         },
-        { onConflict: "user_id,lesson_slug" }
+        {
+          onConflict: "user_id,lesson_slug",
+        }
       );
 
-    if (insertError) throw insertError;
+    if (error) throw error;
+
     return;
   }
 
   const bookmarks = getLocalBookmarks();
 
-  if (bookmarks.some((item) => item.lesson_slug === lesson.lesson_slug)) {
+  if (
+    bookmarks.some(
+      (item) => item.lesson_slug === lesson.lesson_slug
+    )
+  ) {
     return;
   }
 
@@ -93,21 +123,26 @@ export async function addBookmark(
   ]);
 }
 
+// Remove a bookmark belonging to the current account or guest.
 export async function removeBookmark(slug: string): Promise<void> {
   const supabase = createClient();
 
   const {
     data: { user },
-    error,
+    error: authError,
   } = await supabase.auth.getUser();
 
-  if (!error && user) {
-    const { error: deleteError } = await supabase
+  if (authError) throw authError;
+
+  if (user) {
+    const { error } = await supabase
       .from("bookmarks")
       .delete()
+      .eq("user_id", user.id)
       .eq("lesson_slug", slug);
 
-    if (deleteError) throw deleteError;
+    if (error) throw error;
+
     return;
   }
 
@@ -118,33 +153,7 @@ export async function removeBookmark(slug: string): Promise<void> {
   );
 }
 
+// Guest bookmarks are deliberately NOT imported into user accounts.
 export async function syncGuestBookmarks(): Promise<void> {
-  const bookmarks = getLocalBookmarks();
-
-  if (bookmarks.length === 0) return;
-
-  const supabase = createClient();
-
-  const {
-    data: { user },
-    error,
-  } = await supabase.auth.getUser();
-
-  if (error || !user) return;
-
-  const { error: syncError } = await supabase
-    .from("bookmarks")
-    .upsert(
-      bookmarks.map((bookmark) => ({
-        user_id: user.id,
-        lesson_slug: bookmark.lesson_slug,
-        lesson_title: bookmark.lesson_title,
-        course_name: bookmark.course_name,
-      })),
-      { onConflict: "user_id,lesson_slug" }
-    );
-
-  if (syncError) throw syncError;
-
-  localStorage.removeItem(STORAGE_KEY);
+  return;
 }

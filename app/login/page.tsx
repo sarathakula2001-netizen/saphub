@@ -5,7 +5,6 @@ import Link from "next/link";
 import { Suspense, useEffect, useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import { syncLearningData } from "@/lib/learning-sync";
 
 function LoginContent() {
   const router = useRouter();
@@ -47,20 +46,13 @@ function LoginContent() {
   }, [searchParams]);
 
   // Called only after successful authentication.
+  // Guest progress and bookmarks are never imported into an account.
   async function completeLogin() {
-    try {
-      await syncLearningData();
-    } catch (error) {
-      console.error("Learning data sync failed:", error);
-    }
-
-    // Reset the inactivity timer for this new login.
     localStorage.setItem(
       "saphub:last-activity",
       Date.now().toString()
     );
 
-    // Remove any previous logout marker.
     localStorage.removeItem("saphub:session-logout");
 
     router.replace("/dashboard");
