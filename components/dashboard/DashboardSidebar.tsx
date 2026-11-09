@@ -5,8 +5,9 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+
 import {
-  getCompletedLessons,
+  loadCompletedLessons,
   PROGRESS_EVENT,
 } from "@/lib/progress";
 
@@ -95,37 +96,78 @@ export default function DashboardSidebar() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [userExists, setUserExists] = useState(false);
 
+  // Load progress belonging to the current account or guest.
   useEffect(() => {
-    setCompletedLessons(getCompletedLessons());
+    let active = true;
 
-    function updateProgress() {
-      setCompletedLessons(getCompletedLessons());
+    async function updateProgress() {
+      try {
+        const lessons = await loadCompletedLessons();
+
+        if (active) {
+          setCompletedLessons(lessons);
+        }
+      } catch (error) {
+        console.error("Unable to load sidebar progress:", error);
+
+        if (active) {
+          setCompletedLessons([]);
+        }
+      }
     }
 
-    window.addEventListener(PROGRESS_EVENT, updateProgress);
-    window.addEventListener("storage", updateProgress);
+    function handleProgressUpdate() {
+      void updateProgress();
+    }
+
+    void updateProgress();
+
+    window.addEventListener(PROGRESS_EVENT, handleProgressUpdate);
+    window.addEventListener("storage", handleProgressUpdate);
+
+    const supabase = createClient();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(() => {
+      window.setTimeout(() => {
+        void updateProgress();
+      }, 0);
+    });
 
     return () => {
-      window.removeEventListener(PROGRESS_EVENT, updateProgress);
-      window.removeEventListener("storage", updateProgress);
+      active = false;
+
+      window.removeEventListener(PROGRESS_EVENT, handleProgressUpdate);
+      window.removeEventListener("storage", handleProgressUpdate);
+
+      subscription.unsubscribe();
     };
   }, []);
 
+  // Check authentication and update the sign-in/sign-out menu.
   useEffect(() => {
     const supabase = createClient();
     let active = true;
 
     async function checkUser() {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (active) setUserExists(!!user);
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (active) {
+        setUserExists(!!user);
+      }
     }
 
-    checkUser();
+    void checkUser();
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (active) setUserExists(!!session?.user);
+      if (active) {
+        setUserExists(!!session?.user);
+      }
     });
 
     return () => {
@@ -134,6 +176,7 @@ export default function DashboardSidebar() {
     };
   }, []);
 
+  // Navigation behavior.
   useEffect(() => {
     setMobileOpen(false);
 
@@ -152,6 +195,7 @@ export default function DashboardSidebar() {
     }
   }, [pathname]);
 
+  // Prevent background scrolling when mobile menu is open.
   useEffect(() => {
     document.body.style.overflow = mobileOpen ? "hidden" : "";
 
@@ -162,9 +206,13 @@ export default function DashboardSidebar() {
 
   async function handleLogout() {
     const supabase = createClient();
+
     await supabase.auth.signOut();
+
     setUserExists(false);
+    setCompletedLessons([]);
     setMobileOpen(false);
+
     router.replace("/");
     router.refresh();
   }
@@ -188,6 +236,7 @@ export default function DashboardSidebar() {
                 <h1 className="text-xl font-bold">
                   SAP<span className="text-blue-400">Hub</span>
                 </h1>
+
                 <p className="mt-0.5 text-[10px] tracking-[0.2em] text-slate-500">
                   LEARN. CONNECT. GROW.
                 </p>
@@ -242,6 +291,7 @@ export default function DashboardSidebar() {
                 <span className="text-lg">▤</span>
                 My Learning
               </span>
+
               <span>{learningOpen ? "⌄" : "›"}</span>
             </button>
 
@@ -320,6 +370,7 @@ export default function DashboardSidebar() {
                                     <span className="mt-0.5 shrink-0">
                                       {completed ? "✓" : "○"}
                                     </span>
+
                                     <span>{lesson.title}</span>
                                   </Link>
                                 );
@@ -340,6 +391,7 @@ export default function DashboardSidebar() {
                     </span>
                     SAP HANA
                   </span>
+
                   <span className="text-[9px]">SOON</span>
                 </div>
               </div>
@@ -380,7 +432,9 @@ export default function DashboardSidebar() {
                 <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/[0.05]">
                   {item.icon}
                 </span>
+
                 {item.label}
+
                 <span className="ml-auto text-[9px] text-slate-600">
                   SOON
                 </span>

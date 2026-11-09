@@ -17,35 +17,45 @@ export default function SessionTimeout() {
     const supabase = createClient();
 
     try {
+      // Notify other tabs that this session has expired.
       localStorage.setItem(LOGOUT_KEY, Date.now().toString());
+
       await supabase.auth.signOut();
     } catch (error) {
       console.error("Automatic logout failed:", error);
     } finally {
       localStorage.removeItem(ACTIVITY_KEY);
+
       router.replace("/login?reason=session_expired");
       router.refresh();
     }
   }, [router]);
 
   useEffect(() => {
-    let timeoutId: ReturnType<typeof setTimeout>;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let loggingOut = false;
+    let authenticated = false;
     let lastActivityWrite = 0;
 
-    function scheduleLogout() {
-      clearTimeout(timeoutId);
+    function clearTimer() {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = undefined;
+      }
+    }
 
-      if (loggingOut) return;
+    function scheduleLogout() {
+      clearTimer();
+
+      if (!authenticated || loggingOut) return;
 
       let lastActivity = Number(
         localStorage.getItem(ACTIVITY_KEY) || 0
       );
 
-      // If there is no saved activity timestamp,
-      // start a fresh inactivity period.
-      if (!lastActivity) {
+      if (!lastActivity || !Number.isFinite(lastActivity)) {
         lastActivity = Date.now();
+
         localStorage.setItem(
           ACTIVITY_KEY,
           lastActivity.toString()
@@ -67,7 +77,7 @@ export default function SessionTimeout() {
     }
 
     function recordActivity() {
-      if (loggingOut) return;
+      if (!authenticated || loggingOut) return;
 
       const now = Date.now();
 
@@ -82,20 +92,38 @@ export default function SessionTimeout() {
     function handleStorage(event: StorageEvent) {
       if (event.key === LOGOUT_KEY && event.newValue) {
         loggingOut = true;
-        clearTimeout(timeoutId);
+        authenticated = false;
+        clearTimer();
 
         router.replace("/login?reason=session_expired");
         router.refresh();
         return;
       }
 
-      if (event.key === ACTIVITY_KEY) {
+      if (event.key === ACTIVITY_KEY && authenticated) {
         scheduleLogout();
       }
     }
 
-    // Start or resume the inactivity timer.
-    scheduleLogout();
+    // Listen for Supabase authentication state.
+    const supabase = createClient();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      if (session && session.user) {
+        authenticated = true;
+
+        // Start/resume the timer only for an authenticated user.
+        scheduleLogout();
+      } else if (
+        event === "INITIAL_SESSION" ||
+        event === "SIGNED_OUT"
+      ) {
+        authenticated = false;
+        clearTimer();
+      }
+    });
 
     const activityEvents = [
       "mousedown",
@@ -115,13 +143,16 @@ export default function SessionTimeout() {
     window.addEventListener("storage", handleStorage);
 
     return () => {
-      clearTimeout(timeoutId);
+      authenticated = false;
+      clearTimer();
 
       activityEvents.forEach((eventName) => {
         window.removeEventListener(eventName, recordActivity);
       });
 
       window.removeEventListener("storage", handleStorage);
+
+      subscription.unsubscribe();
     };
   }, [logout, router]);
 
