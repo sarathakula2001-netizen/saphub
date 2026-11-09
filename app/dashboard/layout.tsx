@@ -1,6 +1,8 @@
-﻿import { Suspense } from "react";
+﻿
+import { Suspense } from "react";
 import type { ReactNode } from "react";
 import DashboardAuthGate from "./DashboardAuthGate";
+import SessionTimeout from "./SessionTimeout";
 
 export default function DashboardLayout({
   children,
@@ -15,7 +17,10 @@ export default function DashboardLayout({
         </main>
       }
     >
-      <DashboardAuthGate>{children}</DashboardAuthGate>
+      <DashboardAuthGate>
+        <SessionTimeout />
+        {children}
+      </DashboardAuthGate>
     </Suspense>
   );
 }
